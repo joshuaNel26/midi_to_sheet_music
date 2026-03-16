@@ -146,7 +146,7 @@ class _EditableTabBlockCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '${block.label} • Click cells to add or remove notes',
+              '${block.label} - Click cells to add or remove notes',
               style: theme.textTheme.titleMedium?.copyWith(
                 color: AppPalette.pageInk,
                 fontWeight: FontWeight.w700,

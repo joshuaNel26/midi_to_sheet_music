@@ -116,7 +116,7 @@ class ScorePagePainter extends CustomPainter {
     titlePainter.paint(canvas, Offset(paddingX, paddingY));
 
     final metaPainter = _layoutText(
-      '${score.timeSignature.label}  •  ${score.tempoBpm} BPM  •  ${score.totalHits} hits  •  ${score.usedPieces.length} mapped drums',
+      '${score.timeSignature.label} - ${score.tempoBpm} BPM - ${score.totalHits} hits - ${score.usedPieces.length} mapped drums',
       TextStyle(
         color: AppPalette.pageInk.withValues(alpha: 0.74),
         fontSize: size.width * 0.015,

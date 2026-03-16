@@ -227,6 +227,20 @@ class DrumLibrary {
 
   static DrumPiece defaultForMidiNote(int midiNote) =>
       generalMidiMap[midiNote] ?? auxiliary;
+
+  static int defaultMidiNoteForPieceId(String pieceId) {
+    if (pieceId == ignore.id) {
+      return 0;
+    }
+
+    for (final entry in generalMidiMap.entries) {
+      if (entry.value.id == pieceId) {
+        return entry.key;
+      }
+    }
+
+    return 54;
+  }
 }
 
 class MidiTimeSignature {
