@@ -5,6 +5,8 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'models/drum_models.dart';
+import 'services/mapping_config_store.dart';
+import 'services/mapping_file_parser.dart';
 import 'services/midi_parser.dart';
 import 'services/pdf_export_service.dart';
 import 'services/score_builder.dart';
@@ -17,6 +19,10 @@ const _midiFileTypes = [
 
 const _pdfFileTypes = [
   XTypeGroup(label: 'PDF Documents', extensions: ['pdf']),
+];
+
+const _mappingFileTypes = [
+  XTypeGroup(label: 'Mapping Files', extensions: ['iom']),
 ];
 
 class MidiToDrumApp extends StatelessWidget {
@@ -41,7 +47,9 @@ class MidiToDrumHomePage extends StatefulWidget {
 }
 
 class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
+  final MappingConfigStore _mappingConfigStore = MappingConfigStore();
   final MidiFileParser _midiParser = MidiFileParser();
+  final SamplerIoMapParser _ioMapParser = SamplerIoMapParser();
   final ScoreBuilder _scoreBuilder = ScoreBuilder();
   final ScrollController _sidebarScrollController = ScrollController();
   final ScrollController _previewScrollController = ScrollController();
@@ -54,14 +62,69 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   String? _loadedFilePath;
   String? _statusMessage;
   String? _errorMessage;
+  Map<int, String> _savedMappingConfig = const {};
   bool _isLoading = false;
   bool _isExporting = false;
+  bool _isImportingMapping = false;
+  bool _isSavingConfig = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedMappingConfig();
+  }
 
   @override
   void dispose() {
     _sidebarScrollController.dispose();
     _previewScrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSavedMappingConfig() async {
+    try {
+      final savedConfig = await _mappingConfigStore.load();
+      if (!mounted) {
+        return;
+      }
+
+      if (_parsedMidi == null || _sourceNotes.isEmpty) {
+        setState(() {
+          _savedMappingConfig = savedConfig;
+          if (savedConfig.isNotEmpty) {
+            _statusMessage =
+                'Loaded saved mapping config with ${savedConfig.length} note assignments.';
+          }
+        });
+        return;
+      }
+
+      final nextMapping = _buildInitialMapping(_sourceNotes, savedConfig);
+      final score = _scoreBuilder.build(
+        midi: _parsedMidi!,
+        title: displayTitleFromFileName(_parsedMidi!.sourceName),
+        mappingIds: nextMapping,
+      );
+
+      setState(() {
+        _savedMappingConfig = savedConfig;
+        _noteMapping = nextMapping;
+        _score = score;
+        if (savedConfig.isNotEmpty) {
+          _statusMessage =
+              'Loaded saved mapping config with ${savedConfig.length} note assignments.';
+        }
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage =
+            'The saved mapping config could not be loaded. ${error.toString()}';
+      });
+    }
   }
 
   Future<void> _selectMidiFile() async {
@@ -87,10 +150,10 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         sourceName: selection.name,
       );
       final sourceNotes = extractSourceNotes(parsedMidi);
-      final defaultMapping = {
-        for (final note in sourceNotes)
-          note.midiNote: DrumLibrary.defaultForMidiNote(note.midiNote).id,
-      };
+      final defaultMapping = _buildInitialMapping(
+        sourceNotes,
+        _savedMappingConfig,
+      );
 
       final score = _scoreBuilder.build(
         midi: parsedMidi,
@@ -189,6 +252,142 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     }
   }
 
+  Future<void> _importMappingFile() async {
+    final parsedMidi = _parsedMidi;
+    if (parsedMidi == null) {
+      _showMessage('Load a MIDI file before importing a mapping file.');
+      return;
+    }
+
+    final selection = await openFile(
+      acceptedTypeGroups: _mappingFileTypes,
+      confirmButtonText: 'Import Mapping',
+    );
+
+    if (selection == null) {
+      return;
+    }
+
+    setState(() {
+      _isImportingMapping = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final bytes = await selection.readAsBytes();
+      final importedMap = _ioMapParser.parse(bytes, sourceName: selection.name);
+
+      final nextMapping = Map<int, String>.from(_noteMapping);
+      var appliedCount = 0;
+      var multiTargetCount = 0;
+
+      for (final note in _sourceNotes) {
+        final targets = importedMap.noteTargets[note.midiNote];
+        if (targets == null || targets.isEmpty) {
+          continue;
+        }
+
+        if (targets.length > 1) {
+          multiTargetCount += 1;
+        }
+
+        nextMapping[note.midiNote] = DrumLibrary.defaultForMidiNote(
+          targets.first,
+        ).id;
+        appliedCount += 1;
+      }
+
+      final score = _scoreBuilder.build(
+        midi: parsedMidi,
+        title: displayTitleFromFileName(parsedMidi.sourceName),
+        mappingIds: nextMapping,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _noteMapping = nextMapping;
+        _score = score;
+        _statusMessage =
+            'Imported ${importedMap.mapName} and applied $appliedCount note mapping${appliedCount == 1 ? '' : 's'}.'
+            '${multiTargetCount > 0 ? ' $multiTargetCount source note${multiTargetCount == 1 ? ' has' : 's have'} multiple targets; the first target was used.' : ''}';
+      });
+    } on MappingFileParseException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = error.message;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage =
+            'The mapping file could not be imported. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImportingMapping = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _saveCurrentMappingConfig() async {
+    if (_sourceNotes.isEmpty) {
+      _showMessage('Load a MIDI file and set up a mapping first.');
+      return;
+    }
+
+    final mappingToSave = {
+      for (final note in _sourceNotes)
+        note.midiNote:
+            _noteMapping[note.midiNote] ??
+            DrumLibrary.defaultForMidiNote(note.midiNote).id,
+    };
+
+    setState(() {
+      _isSavingConfig = true;
+      _errorMessage = null;
+    });
+
+    try {
+      await _mappingConfigStore.save(mappingToSave);
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _savedMappingConfig = mappingToSave;
+        _statusMessage =
+            'Saved mapping config with ${mappingToSave.length} note assignments.';
+      });
+      _showMessage('Mapping config saved.');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage =
+            'The mapping config could not be saved. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingConfig = false;
+        });
+      }
+    }
+  }
+
   void _resetMapping() {
     final parsedMidi = _parsedMidi;
     if (parsedMidi == null) {
@@ -241,6 +440,18 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Map<int, String> _buildInitialMapping(
+    List<DrumSourceNote> sourceNotes,
+    Map<int, String> savedConfig,
+  ) {
+    return {
+      for (final note in sourceNotes)
+        note.midiNote:
+            savedConfig[note.midiNote] ??
+            DrumLibrary.defaultForMidiNote(note.midiNote).id,
+    };
   }
 
   @override
@@ -367,6 +578,58 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                           ),
                           icon: const Icon(Icons.restart_alt_outlined),
                           label: const Text('Reset to GM'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _parsedMidi == null || _isSavingConfig
+                              ? null
+                              : _saveCurrentMappingConfig,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppPalette.textPrimary,
+                            side: const BorderSide(color: AppPalette.divider),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 14,
+                            ),
+                          ),
+                          icon: _isSavingConfig
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.save_outlined),
+                          label: Text(
+                            _isSavingConfig ? 'Saving...' : 'Save Config',
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _parsedMidi == null || _isImportingMapping
+                              ? null
+                              : _importMappingFile,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppPalette.textPrimary,
+                            side: const BorderSide(color: AppPalette.divider),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 14,
+                            ),
+                          ),
+                          icon: _isImportingMapping
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.upload_file_outlined),
+                          label: Text(
+                            _isImportingMapping
+                                ? 'Importing Map...'
+                                : 'Import Mapping',
+                          ),
                         ),
                       ],
                     ),
@@ -737,6 +1000,7 @@ class _MappingRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final selectedPiece = DrumLibrary.pieceForId(selectedPieceId);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -768,21 +1032,33 @@ class _MappingRow extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            DropdownButtonFormField<String>(
-              initialValue: selectedPieceId,
-              isExpanded: true,
+            Text(
+              'Assigned to ${selectedPiece.label}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: AppPalette.textMuted,
+              ),
+            ),
+            const SizedBox(height: 8),
+            InputDecorator(
               decoration: const InputDecoration(
                 labelText: 'Drum part',
                 isDense: true,
               ),
-              items: [
-                for (final piece in DrumLibrary.assignablePieces)
-                  DropdownMenuItem<String>(
-                    value: piece.id,
-                    child: Text(piece.label),
-                  ),
-              ],
-              onChanged: onChanged,
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  key: ValueKey('${sourceNote.midiNote}-$selectedPieceId'),
+                  value: selectedPieceId,
+                  isExpanded: true,
+                  items: [
+                    for (final piece in DrumLibrary.assignablePieces)
+                      DropdownMenuItem<String>(
+                        value: piece.id,
+                        child: Text(piece.label),
+                      ),
+                  ],
+                  onChanged: onChanged,
+                ),
+              ),
             ),
           ],
         ),
