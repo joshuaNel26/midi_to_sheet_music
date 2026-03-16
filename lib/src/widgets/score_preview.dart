@@ -26,17 +26,34 @@ double stemXForIndex(
   int stemIndex,
   int stemCount,
 ) {
+  final baseStemX = noteCenterX + noteWidth * 0.42;
   if (stemCount <= 1) {
-    return noteCenterX + noteWidth * 0.62;
+    return baseStemX;
   }
 
-  final spread = noteWidth * 0.24;
+  final spread = noteWidth * 0.18;
   final offset = (stemIndex - ((stemCount - 1) / 2)) * spread;
-  return noteCenterX + noteWidth * 0.62 + offset;
+  return baseStemX + offset;
 }
 
 double stemTopYForNote(double noteY, double lineSpacing) {
   return noteY - lineSpacing * 3.15;
+}
+
+Rect rhythmBarRectForStem(
+  double stemX,
+  double stemTop,
+  double lineSpacing,
+  int barIndex,
+) {
+  final barTop = stemTop + barIndex * lineSpacing * 0.46;
+  final barWidth = lineSpacing * 0.78;
+  return Rect.fromLTWH(
+    stemX - barWidth + lineSpacing * 0.04,
+    barTop,
+    barWidth,
+    lineSpacing * 0.18,
+  );
 }
 
 class ScorePageWidget extends StatelessWidget {
@@ -321,11 +338,10 @@ class ScorePagePainter extends CustomPainter {
 
       canvas.drawLine(Offset(stemX, y), Offset(stemX, stemTop), stemPaint);
 
-      for (var flag = 0; flag < noteSpec.flagCount; flag++) {
-        _drawFlag(
+      for (var barIndex = 0; barIndex < noteSpec.flagCount; barIndex++) {
+        _drawRhythmBar(
           canvas,
-          Offset(stemX, stemTop + flag * lineSpacing * 0.48),
-          lineSpacing,
+          rhythmBarRectForStem(stemX, stemTop, lineSpacing, barIndex),
         );
       }
 
@@ -426,29 +442,8 @@ class ScorePagePainter extends CustomPainter {
     canvas.restore();
   }
 
-  void _drawFlag(Canvas canvas, Offset origin, double lineSpacing) {
-    final path = Path()
-      ..moveTo(origin.dx, origin.dy)
-      ..quadraticBezierTo(
-        origin.dx + lineSpacing * 0.95,
-        origin.dy + lineSpacing * 0.15,
-        origin.dx + lineSpacing * 0.78,
-        origin.dy + lineSpacing * 0.92,
-      )
-      ..quadraticBezierTo(
-        origin.dx + lineSpacing * 0.28,
-        origin.dy + lineSpacing * 0.74,
-        origin.dx,
-        origin.dy + lineSpacing * 1.28,
-      );
-
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = AppPalette.pageInk
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.35,
-    );
+  void _drawRhythmBar(Canvas canvas, Rect rect) {
+    canvas.drawRect(rect, Paint()..color = AppPalette.pageInk);
   }
 
   void _drawWholeMeasureRest(Canvas canvas, Rect rect, double lineSpacing) {
