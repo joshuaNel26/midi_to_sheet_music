@@ -389,7 +389,8 @@ String midiNoteName(int note) {
     'B',
   ];
 
-  final octave = (note ~/ 12) - 1;
+  // FL Studio labels middle C (MIDI 60) as C5, so shift the displayed octave.
+  final octave = note ~/ 12;
   return '${names[note % 12]}$octave';
 }
 
