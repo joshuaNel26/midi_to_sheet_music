@@ -4,6 +4,7 @@ enum DrumNoteheadStyle { regular, cross }
 
 const scoreMeasuresPerSystem = 4;
 const scoreSystemsPerPage = 6;
+const scoreSlotsPerQuarter = 4;
 
 class DrumPiece {
   const DrumPiece({
@@ -235,6 +236,50 @@ class MidiTimeSignature {
   final int denominator;
 
   String get label => '$numerator/$denominator';
+}
+
+int slotsPerMeasureForTimeSignature(MidiTimeSignature timeSignature) {
+  return math.max(
+    1,
+    ((timeSignature.numerator * scoreSlotsPerQuarter * 4) /
+            timeSignature.denominator)
+        .round(),
+  );
+}
+
+int slotsPerBeatForTimeSignature(MidiTimeSignature timeSignature) {
+  return math.max(
+    1,
+    (slotsPerMeasureForTimeSignature(timeSignature) / timeSignature.numerator)
+        .round(),
+  );
+}
+
+String slotLabelForIndex(int slotIndex, int slotsPerBeat) {
+  final beatNumber = (slotIndex ~/ slotsPerBeat) + 1;
+  final slotInBeat = slotIndex % slotsPerBeat;
+  if (slotInBeat == 0) {
+    return '$beatNumber';
+  }
+
+  return '$beatNumber${_subdivisionLabel(slotInBeat, slotsPerBeat)}';
+}
+
+String _subdivisionLabel(int slotInBeat, int slotsPerBeat) {
+  switch (slotsPerBeat) {
+    case 2:
+      return '&';
+    case 3:
+      return slotInBeat == 1 ? '&' : 'a';
+    case 4:
+      return switch (slotInBeat) {
+        1 => 'e',
+        2 => '+',
+        _ => 'a',
+      };
+    default:
+      return '+';
+  }
 }
 
 class MidiNoteEvent {

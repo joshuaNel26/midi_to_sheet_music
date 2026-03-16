@@ -5,20 +5,20 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'models/drum_models.dart';
+import 'services/drum_tab_builder.dart';
 import 'services/mapping_config_store.dart';
 import 'services/mapping_file_parser.dart';
 import 'services/midi_parser.dart';
-import 'services/pdf_export_service.dart';
 import 'services/score_builder.dart';
 import 'theme.dart';
-import 'widgets/score_preview.dart';
+import 'widgets/drum_tab_preview.dart';
 
 const _midiFileTypes = [
   XTypeGroup(label: 'MIDI Files', extensions: ['mid', 'midi']),
 ];
 
-const _pdfFileTypes = [
-  XTypeGroup(label: 'PDF Documents', extensions: ['pdf']),
+const _tabFileTypes = [
+  XTypeGroup(label: 'Text Documents', extensions: ['txt']),
 ];
 
 const _mappingFileTypes = [
@@ -31,7 +31,7 @@ class MidiToDrumApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'MIDI to Drum Sheet',
+      title: 'MIDI to Drum Tab',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
       home: const MidiToDrumHomePage(),
@@ -47,6 +47,7 @@ class MidiToDrumHomePage extends StatefulWidget {
 }
 
 class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
+  final DrumTabBuilder _tabBuilder = DrumTabBuilder();
   final MappingConfigStore _mappingConfigStore = MappingConfigStore();
   final MidiFileParser _midiParser = MidiFileParser();
   final SamplerIoMapParser _ioMapParser = SamplerIoMapParser();
@@ -56,6 +57,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
 
   ParsedMidiFile? _parsedMidi;
   ScoreDocument? _score;
+  DrumTabDocument? _tabDocument;
   List<DrumSourceNote> _sourceNotes = const [];
   Map<int, String> _noteMapping = const {};
   String? _loadedFileName;
@@ -63,9 +65,12 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   String? _statusMessage;
   String? _errorMessage;
   Map<int, String> _savedMappingConfig = const {};
+  int _startOffsetSlots = 0;
+  String _generatedTabText = '';
   bool _isLoading = false;
   bool _isExporting = false;
   bool _isImportingMapping = false;
+  bool _isEditingTab = false;
   bool _isSavingConfig = false;
 
   @override
@@ -90,29 +95,42 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
 
       if (_parsedMidi == null || _sourceNotes.isEmpty) {
         setState(() {
-          _savedMappingConfig = savedConfig;
-          if (savedConfig.isNotEmpty) {
+          _savedMappingConfig = savedConfig.noteMapping;
+          _startOffsetSlots = savedConfig.startOffsetSlots;
+          if (savedConfig.noteMapping.isNotEmpty) {
             _statusMessage =
-                'Loaded saved mapping config with ${savedConfig.length} note assignments.';
+                'Loaded saved mapping config with ${savedConfig.noteMapping.length} note assignments.';
           }
         });
         return;
       }
 
-      final nextMapping = _buildInitialMapping(_sourceNotes, savedConfig);
-      final score = _scoreBuilder.build(
+      final nextMapping = _buildInitialMapping(
+        _sourceNotes,
+        savedConfig.noteMapping,
+      );
+      final startOffsetSlots = _normalizedStartOffsetForMidi(
+        _parsedMidi!,
+        savedConfig.startOffsetSlots,
+      );
+      final (score, tabDocument) = _buildOutputs(
         midi: _parsedMidi!,
         title: displayTitleFromFileName(_parsedMidi!.sourceName),
         mappingIds: nextMapping,
+        startOffsetSlots: startOffsetSlots,
       );
+      _generatedTabText = tabDocument.toPlainText();
 
       setState(() {
-        _savedMappingConfig = savedConfig;
+        _savedMappingConfig = savedConfig.noteMapping;
+        _startOffsetSlots = startOffsetSlots;
         _noteMapping = nextMapping;
         _score = score;
-        if (savedConfig.isNotEmpty) {
+        _tabDocument = tabDocument;
+        _isEditingTab = false;
+        if (savedConfig.noteMapping.isNotEmpty) {
           _statusMessage =
-              'Loaded saved mapping config with ${savedConfig.length} note assignments.';
+              'Loaded saved mapping config with ${savedConfig.noteMapping.length} note assignments.';
         }
       });
     } catch (error) {
@@ -154,12 +172,18 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         sourceNotes,
         _savedMappingConfig,
       );
+      final startOffsetSlots = _normalizedStartOffsetForMidi(
+        parsedMidi,
+        _startOffsetSlots,
+      );
 
-      final score = _scoreBuilder.build(
+      final (score, tabDocument) = _buildOutputs(
         midi: parsedMidi,
         title: displayTitleFromFileName(selection.name),
         mappingIds: defaultMapping,
+        startOffsetSlots: startOffsetSlots,
       );
+      _generatedTabText = tabDocument.toPlainText();
 
       if (!mounted) {
         return;
@@ -169,7 +193,10 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         _parsedMidi = parsedMidi;
         _sourceNotes = sourceNotes;
         _noteMapping = defaultMapping;
+        _startOffsetSlots = startOffsetSlots;
         _score = score;
+        _tabDocument = tabDocument;
+        _isEditingTab = false;
         _loadedFileName = selection.name;
         _loadedFilePath = selection.path;
         _statusMessage = parsedMidi.usedPercussionChannelOnly
@@ -200,9 +227,9 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     }
   }
 
-  Future<void> _exportPdf() async {
-    final score = _score;
-    if (score == null) {
+  Future<void> _exportTab() async {
+    final tabDocument = _tabDocument;
+    if (tabDocument == null) {
       return;
     }
 
@@ -213,35 +240,36 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
 
     try {
       final saveLocation = await getSaveLocation(
-        acceptedTypeGroups: _pdfFileTypes,
-        suggestedName: '${score.title.replaceAll(' ', '_')}.pdf',
-        confirmButtonText: 'Export PDF',
+        acceptedTypeGroups: _tabFileTypes,
+        suggestedName: '${tabDocument.title.replaceAll(' ', '_')}.txt',
+        confirmButtonText: 'Export Tab',
       );
 
       if (saveLocation == null) {
         return;
       }
 
-      final pdfBytes = await PdfExportService.buildPdf(score);
-      final targetPath = saveLocation.path.toLowerCase().endsWith('.pdf')
+      final targetPath = saveLocation.path.toLowerCase().endsWith('.txt')
           ? saveLocation.path
-          : '${saveLocation.path}.pdf';
+          : '${saveLocation.path}.txt';
 
-      await File(targetPath).writeAsBytes(pdfBytes, flush: true);
+      await File(
+        targetPath,
+      ).writeAsString(tabDocument.toPlainText(), flush: true);
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _statusMessage = 'PDF exported to $targetPath';
+        _statusMessage = 'Drum tab exported to $targetPath';
       });
-      _showMessage('PDF exported to $targetPath');
+      _showMessage('Drum tab exported to $targetPath');
     } catch (error) {
       if (!mounted) {
         return;
       }
       setState(() {
-        _errorMessage = 'The PDF export failed. ${error.toString()}';
+        _errorMessage = 'The tab export failed. ${error.toString()}';
       });
     } finally {
       if (mounted) {
@@ -297,11 +325,13 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         appliedCount += 1;
       }
 
-      final score = _scoreBuilder.build(
+      final (score, tabDocument) = _buildOutputs(
         midi: parsedMidi,
         title: displayTitleFromFileName(parsedMidi.sourceName),
         mappingIds: nextMapping,
+        startOffsetSlots: _startOffsetSlots,
       );
+      _generatedTabText = tabDocument.toPlainText();
 
       if (!mounted) {
         return;
@@ -310,6 +340,8 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
       setState(() {
         _noteMapping = nextMapping;
         _score = score;
+        _tabDocument = tabDocument;
+        _isEditingTab = false;
         _statusMessage =
             'Imported ${importedMap.mapName} and applied $appliedCount note mapping${appliedCount == 1 ? '' : 's'}.'
             '${multiTargetCount > 0 ? ' $multiTargetCount source note${multiTargetCount == 1 ? ' has' : 's have'} multiple targets; the first target was used.' : ''}';
@@ -359,7 +391,10 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     });
 
     try {
-      await _mappingConfigStore.save(mappingToSave);
+      await _mappingConfigStore.save(
+        mapping: mappingToSave,
+        startOffsetSlots: _startOffsetSlots,
+      );
       if (!mounted) {
         return;
       }
@@ -399,15 +434,19 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         note.midiNote: DrumLibrary.defaultForMidiNote(note.midiNote).id,
     };
 
-    final score = _scoreBuilder.build(
+    final (score, tabDocument) = _buildOutputs(
       midi: parsedMidi,
       title: displayTitleFromFileName(parsedMidi.sourceName),
       mappingIds: defaultMapping,
+      startOffsetSlots: _startOffsetSlots,
     );
+    _generatedTabText = tabDocument.toPlainText();
 
     setState(() {
       _noteMapping = defaultMapping;
       _score = score;
+      _tabDocument = tabDocument;
+      _isEditingTab = false;
       _statusMessage = 'Mapping reset to the General MIDI drum defaults.';
     });
   }
@@ -422,17 +461,46 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     final nextMapping = Map<int, String>.from(_noteMapping)
       ..[midiNote] = selectedPieceId;
 
-    final score = _scoreBuilder.build(
+    final (score, tabDocument) = _buildOutputs(
       midi: parsedMidi,
       title: displayTitleFromFileName(parsedMidi.sourceName),
       mappingIds: nextMapping,
+      startOffsetSlots: _startOffsetSlots,
     );
+    _generatedTabText = tabDocument.toPlainText();
 
     setState(() {
       _noteMapping = nextMapping;
       _score = score;
+      _tabDocument = tabDocument;
+      _isEditingTab = false;
       _statusMessage =
           'Updated MIDI note $midiNote to ${DrumLibrary.pieceForId(selectedPieceId).label}.';
+    });
+  }
+
+  void _updateStartOffset(int? startOffsetSlots) {
+    final parsedMidi = _parsedMidi;
+    if (parsedMidi == null || startOffsetSlots == null) {
+      return;
+    }
+
+    final (score, tabDocument) = _buildOutputs(
+      midi: parsedMidi,
+      title: displayTitleFromFileName(parsedMidi.sourceName),
+      mappingIds: _noteMapping,
+      startOffsetSlots: startOffsetSlots,
+    );
+    _generatedTabText = tabDocument.toPlainText();
+
+    final slotsPerBeat = slotsPerBeatForTimeSignature(parsedMidi.timeSignature);
+    setState(() {
+      _startOffsetSlots = startOffsetSlots;
+      _score = score;
+      _tabDocument = tabDocument;
+      _isEditingTab = false;
+      _statusMessage =
+          'Aligned the first hit to ${slotLabelForIndex(startOffsetSlots, slotsPerBeat)} of measure 1.';
     });
   }
 
@@ -452,6 +520,90 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
             savedConfig[note.midiNote] ??
             DrumLibrary.defaultForMidiNote(note.midiNote).id,
     };
+  }
+
+  int _normalizedStartOffsetForMidi(ParsedMidiFile midi, int startOffsetSlots) {
+    final maxStartOffset =
+        slotsPerMeasureForTimeSignature(midi.timeSignature) - 1;
+    return math.max(0, math.min(startOffsetSlots, maxStartOffset));
+  }
+
+  (ScoreDocument, DrumTabDocument) _buildOutputs({
+    required ParsedMidiFile midi,
+    required String title,
+    required Map<int, String> mappingIds,
+    required int startOffsetSlots,
+  }) {
+    final score = _scoreBuilder.build(
+      midi: midi,
+      title: title,
+      mappingIds: mappingIds,
+      startOffsetSlots: startOffsetSlots,
+    );
+    final tabDocument = _tabBuilder.build(score);
+    return (score, tabDocument);
+  }
+
+  bool get _hasManualTabEdits =>
+      _tabDocument != null &&
+      _generatedTabText.isNotEmpty &&
+      _tabDocument!.toPlainText() != _generatedTabText;
+
+  void _toggleTabEditing() {
+    if (_tabDocument == null) {
+      return;
+    }
+
+    setState(() {
+      _isEditingTab = !_isEditingTab;
+      _statusMessage = _isEditingTab
+          ? 'Editing mode enabled for the generated tab text.'
+          : 'Returned to the generated tab preview.';
+    });
+  }
+
+  void _resetTabEdits() {
+    final parsedMidi = _parsedMidi;
+    if (parsedMidi == null) {
+      return;
+    }
+
+    final (score, tabDocument) = _buildOutputs(
+      midi: parsedMidi,
+      title: displayTitleFromFileName(parsedMidi.sourceName),
+      mappingIds: _noteMapping,
+      startOffsetSlots: _startOffsetSlots,
+    );
+    _generatedTabText = tabDocument.toPlainText();
+
+    setState(() {
+      _score = score;
+      _tabDocument = tabDocument;
+      _isEditingTab = false;
+      _statusMessage = 'Tab text reset to the generated output.';
+    });
+  }
+
+  void _toggleTabCell(
+    int blockIndex,
+    String pieceId,
+    int measureOffset,
+    int slotIndex,
+  ) {
+    final tabDocument = _tabDocument;
+    if (tabDocument == null ||
+        blockIndex < 0 ||
+        blockIndex >= tabDocument.blocks.length) {
+      return;
+    }
+
+    setState(() {
+      tabDocument.blocks[blockIndex].toggleCell(
+        pieceId: pieceId,
+        measureOffset: measureOffset,
+        slotIndex: slotIndex,
+      );
+    });
   }
 
   @override
@@ -526,14 +678,14 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'MIDI to Drum Sheet',
+                      'MIDI to Drum Tab',
                       style: theme.textTheme.displaySmall?.copyWith(
                         fontSize: 30,
                       ),
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Load a MIDI file, review the detected note map, preview the drum notation, and export the finished chart to PDF.',
+                      'Load a MIDI file, review the detected note map, preview the drum tab, and export the finished tab as plain text.',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: AppPalette.textMuted,
                       ),
@@ -651,6 +803,8 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
               const SizedBox(height: 18),
             _PanelCard(child: _buildStats(theme)),
             const SizedBox(height: 18),
+            _PanelCard(child: _buildTimingSection(theme)),
+            const SizedBox(height: 18),
             _PanelCard(child: _buildExportSection(theme)),
             const SizedBox(height: 18),
             _PanelCard(child: _buildMappingSection(theme)),
@@ -671,7 +825,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
           Text('Session', style: theme.textTheme.titleLarge),
           const SizedBox(height: 14),
           Text(
-            'No MIDI file is loaded yet. Once a file is open, this panel shows the time signature, detected tempo, measures, pages, and how the source notes were interpreted.',
+            'No MIDI file is loaded yet. Once a file is open, this panel shows the time signature, detected tempo, measures, tab blocks, and how the source notes were interpreted.',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: AppPalette.textMuted,
             ),
@@ -695,7 +849,17 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         _StatRow(label: 'Tempo', value: '${parsedMidi.tempoBpm} BPM'),
         _StatRow(label: 'Meter', value: parsedMidi.timeSignature.label),
         _StatRow(label: 'Measures', value: '${score.measures.length}'),
-        _StatRow(label: 'Preview pages', value: '${score.totalPages}'),
+        _StatRow(
+          label: 'Starts on',
+          value: slotLabelForIndex(
+            _startOffsetSlots,
+            slotsPerBeatForTimeSignature(parsedMidi.timeSignature),
+          ),
+        ),
+        _StatRow(
+          label: 'Tab blocks',
+          value: '${_tabDocument?.blockCount ?? 0}',
+        ),
         _StatRow(label: 'Mapped hits', value: '${score.totalHits}'),
         const SizedBox(height: 10),
         Text(
@@ -710,9 +874,76 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     );
   }
 
+  Widget _buildTimingSection(ThemeData theme) {
+    final parsedMidi = _parsedMidi;
+    final score = _score;
+    if (parsedMidi == null || score == null || score.measures.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Timing', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 14),
+          Text(
+            'The earliest rendered hit is aligned to beat 1 by default. Load a MIDI file to adjust where the pattern begins inside the first measure.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: AppPalette.textMuted,
+            ),
+          ),
+        ],
+      );
+    }
+
+    final slotsPerMeasure = score.measures.first.slotsPerMeasure;
+    final slotsPerBeat = score.measures.first.slotsPerBeat;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Timing', style: theme.textTheme.titleLarge),
+        const SizedBox(height: 14),
+        Text(
+          'By default the first rendered hit is moved to 1 of measure 1. Change this if the groove should start later in the bar.',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: AppPalette.textMuted,
+          ),
+        ),
+        const SizedBox(height: 16),
+        InputDecorator(
+          decoration: const InputDecoration(
+            labelText: 'First hit starts on',
+            isDense: true,
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<int>(
+              key: ValueKey('start-offset-$_startOffsetSlots-$slotsPerMeasure'),
+              value: math.max(
+                0,
+                math.min(_startOffsetSlots, slotsPerMeasure - 1),
+              ),
+              isExpanded: true,
+              items: [
+                for (
+                  var slotIndex = 0;
+                  slotIndex < slotsPerMeasure;
+                  slotIndex++
+                )
+                  DropdownMenuItem<int>(
+                    value: slotIndex,
+                    child: Text(slotLabelForIndex(slotIndex, slotsPerBeat)),
+                  ),
+              ],
+              onChanged: _updateStartOffset,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildExportSection(ThemeData theme) {
     final score = _score;
-    final exportEnabled = score != null && !_isExporting;
+    final tabDocument = _tabDocument;
+    final exportEnabled = tabDocument != null && !_isExporting;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -720,14 +951,14 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         Text('Export', style: theme.textTheme.titleLarge),
         const SizedBox(height: 14),
         Text(
-          'The preview and PDF use the same score painter, so the exported document matches what you see on screen.',
+          'The preview and exported text use the same drum-tab layout, and any manual edits made in edit mode are included in the saved file.',
           style: theme.textTheme.bodyMedium?.copyWith(
             color: AppPalette.textMuted,
           ),
         ),
         const SizedBox(height: 18),
         FilledButton.icon(
-          onPressed: exportEnabled ? _exportPdf : null,
+          onPressed: exportEnabled ? _exportTab : null,
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(50),
             backgroundColor: AppPalette.accentSoft,
@@ -739,16 +970,16 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.picture_as_pdf_outlined),
+              : const Icon(Icons.text_snippet_outlined),
           label: Text(
-            _isExporting ? 'Exporting PDF…' : 'Export Preview as PDF',
+            _isExporting ? 'Exporting Tab...' : 'Export Drum Tab as TXT',
           ),
         ),
         const SizedBox(height: 12),
         Text(
-          score == null
+          tabDocument == null
               ? 'Load a MIDI file first to enable export.'
-              : 'Current score: ${score.measures.length} measures across ${score.totalPages} page${score.totalPages == 1 ? '' : 's'}.',
+              : 'Current tab: ${score?.measures.length ?? 0} measures across ${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: AppPalette.textMuted,
           ),
@@ -765,7 +996,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
           Text('Note Mapping', style: theme.textTheme.titleLarge),
           const SizedBox(height: 14),
           Text(
-            'Each MIDI note used by the file will appear here so you can choose which drum sound should be engraved on the staff.',
+            'Each MIDI note used by the file will appear here so you can choose which drum sound should be written into the tab.',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: AppPalette.textMuted,
             ),
@@ -807,10 +1038,11 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
 
   Widget _buildPreviewPane(ThemeData theme) {
     final score = _score;
+    final tabDocument = _tabDocument;
 
     return _PanelCard(
       padding: const EdgeInsets.all(20),
-      child: score == null
+      child: score == null || tabDocument == null
           ? _PreviewPlaceholder(theme: theme)
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -821,10 +1053,13 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Preview', style: theme.textTheme.headlineSmall),
+                          Text(
+                            'Drum Tab',
+                            style: theme.textTheme.headlineSmall,
+                          ),
                           const SizedBox(height: 6),
                           Text(
-                            'Each page below is the same layout used during PDF export.',
+                            'This preview is the same tab layout used when you export the text file.',
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: AppPalette.textMuted,
                             ),
@@ -846,8 +1081,32 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                         ),
                         _InfoChip(
                           label:
-                              '${score.totalPages} page${score.totalPages == 1 ? '' : 's'}',
-                          icon: Icons.auto_stories_outlined,
+                              '${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}',
+                          icon: Icons.view_week_outlined,
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _toggleTabEditing,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppPalette.textPrimary,
+                            side: const BorderSide(color: AppPalette.divider),
+                          ),
+                          icon: Icon(
+                            _isEditingTab
+                                ? Icons.visibility_outlined
+                                : Icons.grid_view_outlined,
+                          ),
+                          label: Text(
+                            _isEditingTab ? 'Preview Tab' : 'Edit Cells',
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _hasManualTabEdits ? _resetTabEdits : null,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppPalette.textPrimary,
+                            side: const BorderSide(color: AppPalette.divider),
+                          ),
+                          icon: const Icon(Icons.undo_outlined),
+                          label: const Text('Reset Edits'),
                         ),
                       ],
                     ),
@@ -855,40 +1114,58 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                 ),
                 const SizedBox(height: 18),
                 Expanded(
-                  child: Scrollbar(
-                    controller: _previewScrollController,
-                    thumbVisibility: true,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final pageWidth = math.min(
-                          900.0,
-                          constraints.maxWidth - 20,
-                        );
-                        return SingleChildScrollView(
+                  child: _isEditingTab
+                      ? Scrollbar(
                           controller: _previewScrollController,
-                          primary: false,
-                          padding: const EdgeInsets.only(right: 6),
-                          child: Center(
-                            child: Column(
-                              children: [
-                                for (final page in score.pages) ...[
-                                  SizedBox(
-                                    width: pageWidth,
-                                    child: ScorePageWidget(
-                                      score: score,
-                                      page: page,
+                          thumbVisibility: true,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final previewWidth = math.min(
+                                1140.0,
+                                constraints.maxWidth - 20,
+                              );
+                              return SingleChildScrollView(
+                                controller: _previewScrollController,
+                                primary: false,
+                                padding: const EdgeInsets.only(right: 6),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: previewWidth,
+                                    child: EditableDrumTabEditor(
+                                      document: tabDocument,
+                                      onToggleCell: _toggleTabCell,
                                     ),
                                   ),
-                                  if (page != score.pages.last)
-                                    const SizedBox(height: 28),
-                                ],
-                              ],
-                            ),
+                                ),
+                              );
+                            },
                           ),
-                        );
-                      },
-                    ),
-                  ),
+                        )
+                      : Scrollbar(
+                          controller: _previewScrollController,
+                          thumbVisibility: true,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final previewWidth = math.min(
+                                980.0,
+                                constraints.maxWidth - 20,
+                              );
+                              return SingleChildScrollView(
+                                controller: _previewScrollController,
+                                primary: false,
+                                padding: const EdgeInsets.only(right: 6),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: previewWidth,
+                                    child: DrumTabPreview(
+                                      document: tabDocument,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
                 ),
               ],
             ),
@@ -1132,7 +1409,7 @@ class _PreviewPlaceholder extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                'Open a drum MIDI file to inspect the detected note numbers, adjust the General MIDI drum map, preview a five-line percussion staff, and export that layout as a PDF.',
+                'Open a drum MIDI file to inspect the detected note numbers, adjust the General MIDI drum map, preview a drum tab layout, and export that tab as plain text.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: AppPalette.textMuted,
                 ),

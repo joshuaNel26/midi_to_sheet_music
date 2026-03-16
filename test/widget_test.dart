@@ -8,7 +8,7 @@ void main() {
   ) async {
     await tester.pumpWidget(const MidiToDrumApp());
 
-    expect(find.text('MIDI to Drum Sheet'), findsOneWidget);
+    expect(find.text('MIDI to Drum Tab'), findsOneWidget);
     expect(find.text('Ready for a MIDI file'), findsOneWidget);
   });
 }

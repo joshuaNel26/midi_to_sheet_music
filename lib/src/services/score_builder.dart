@@ -7,24 +7,22 @@ class ScoreBuilder {
     required ParsedMidiFile midi,
     required String title,
     required Map<int, String> mappingIds,
+    int startOffsetSlots = 0,
   }) {
-    const slotsPerQuarter = 4;
-    final slotsPerMeasure = math.max(
-      1,
-      ((midi.timeSignature.numerator * slotsPerQuarter * 4) /
-              midi.timeSignature.denominator)
-          .round(),
-    );
-
-    final slotsPerBeat = math.max(
-      1,
-      (slotsPerMeasure / midi.timeSignature.numerator).round(),
+    final slotsPerMeasure = slotsPerMeasureForTimeSignature(midi.timeSignature);
+    final slotsPerBeat = slotsPerBeatForTimeSignature(midi.timeSignature);
+    final normalizedStartOffset = math.max(
+      0,
+      math.min(startOffsetSlots, slotsPerMeasure - 1),
     );
 
     final slotMapByMeasure = <int, Map<int, List<ScoreHit>>>{};
     final usedPieces = <String, DrumPiece>{};
     var maxGlobalSlot = 0;
     var totalHits = 0;
+    final renderedEvents =
+        <(int globalSlot, DrumPiece piece, int note, int velocity)>[];
+    int? firstRenderedGlobalSlot;
 
     for (final noteEvent in midi.noteEvents) {
       final pieceId =
@@ -36,27 +34,40 @@ class ScoreBuilder {
       }
 
       final globalSlot =
-          ((noteEvent.startTick / midi.ticksPerQuarterNote) * slotsPerQuarter)
+          ((noteEvent.startTick / midi.ticksPerQuarterNote) *
+                  scoreSlotsPerQuarter)
               .round();
-      final measureIndex = globalSlot ~/ slotsPerMeasure;
-      final slotIndex = globalSlot % slotsPerMeasure;
-
-      maxGlobalSlot = math.max(maxGlobalSlot, globalSlot);
+      firstRenderedGlobalSlot = firstRenderedGlobalSlot == null
+          ? globalSlot
+          : math.min(firstRenderedGlobalSlot, globalSlot);
+      renderedEvents.add((
+        globalSlot,
+        piece,
+        noteEvent.note,
+        noteEvent.velocity,
+      ));
       usedPieces[piece.id] = piece;
       totalHits += 1;
+    }
+
+    final alignmentShift = firstRenderedGlobalSlot ?? 0;
+
+    for (final event in renderedEvents) {
+      final effectiveGlobalSlot =
+          (event.$1 - alignmentShift) + normalizedStartOffset;
+      final measureIndex = effectiveGlobalSlot ~/ slotsPerMeasure;
+      final slotIndex = effectiveGlobalSlot % slotsPerMeasure;
+
+      maxGlobalSlot = math.max(maxGlobalSlot, effectiveGlobalSlot);
 
       final measureMap = slotMapByMeasure.putIfAbsent(measureIndex, () => {});
       final hits = measureMap.putIfAbsent(slotIndex, () => <ScoreHit>[]);
       final alreadyPresent = hits.any(
-        (hit) => hit.midiNote == noteEvent.note && hit.piece.id == piece.id,
+        (hit) => hit.midiNote == event.$3 && hit.piece.id == event.$2.id,
       );
       if (!alreadyPresent) {
         hits.add(
-          ScoreHit(
-            piece: piece,
-            midiNote: noteEvent.note,
-            velocity: noteEvent.velocity,
-          ),
+          ScoreHit(piece: event.$2, midiNote: event.$3, velocity: event.$4),
         );
       }
     }
