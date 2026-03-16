@@ -7,6 +7,38 @@ import '../theme.dart';
 
 const a4AspectRatio = 1 / 1.41421356237;
 
+int systemLayoutSlotsForPage(int pageSystemCount) {
+  return math.max(scoreSystemsPerPage, pageSystemCount);
+}
+
+double systemHeightForPage(
+  double systemsHeight,
+  double systemGap,
+  int pageSystemCount,
+) {
+  final layoutSlots = systemLayoutSlotsForPage(pageSystemCount);
+  return (systemsHeight - (layoutSlots - 1) * systemGap) / layoutSlots;
+}
+
+double stemXForIndex(
+  double noteCenterX,
+  double noteWidth,
+  int stemIndex,
+  int stemCount,
+) {
+  if (stemCount <= 1) {
+    return noteCenterX + noteWidth * 0.62;
+  }
+
+  final spread = noteWidth * 0.24;
+  final offset = (stemIndex - ((stemCount - 1) / 2)) * spread;
+  return noteCenterX + noteWidth * 0.62 + offset;
+}
+
+double stemTopYForNote(double noteY, double lineSpacing) {
+  return noteY - lineSpacing * 3.15;
+}
+
 class ScorePageWidget extends StatelessWidget {
   const ScorePageWidget({super.key, required this.score, required this.page});
 
@@ -82,10 +114,11 @@ class ScorePagePainter extends CustomPainter {
     final footerTop = size.height - paddingY - 18;
     final systemsHeight = footerTop - headerBottom;
     final systemGap = size.height * 0.016;
-    final systemCount = math.max(page.systems.length, 1);
-    final availableSystemsHeight =
-        systemsHeight - (systemCount - 1) * systemGap;
-    final systemHeight = availableSystemsHeight / systemCount;
+    final systemHeight = systemHeightForPage(
+      systemsHeight,
+      systemGap,
+      page.systems.length,
+    );
 
     for (var index = 0; index < page.systems.length; index++) {
       final top = headerBottom + index * (systemHeight + systemGap);
@@ -243,15 +276,16 @@ class ScorePagePainter extends CustomPainter {
         (left, right) =>
             left.piece.staffPosition.compareTo(right.piece.staffPosition),
       );
+    final stemmedHits = sortedHits.where((hit) => hit.piece.showStem).toList();
     final noteWidth = lineSpacing * 1.05;
     final noteHeight = lineSpacing * 0.72;
     final notePaint = Paint()..color = AppPalette.pageInk;
-    final stemBaseY = _yForPosition(
-      sortedHits.first.piece.staffPosition,
-      staffTop,
-      lineSpacing,
-    );
     final noteSpec = _noteSpecForSlot(measure, slot.index);
+    final stemPaint = Paint()
+      ..color = AppPalette.pageInk
+      ..strokeWidth = 1.35;
+    final stemTops = <double>[];
+    var stemIndex = 0;
 
     for (final hit in sortedHits) {
       final y = _yForPosition(hit.piece.staffPosition, staffTop, lineSpacing);
@@ -275,32 +309,33 @@ class ScorePagePainter extends CustomPainter {
             ..strokeWidth = 1.2,
         );
       }
-    }
 
-    final stemX = x + noteWidth * 0.62;
-    final stemTop = stemBaseY - lineSpacing * 3.15;
-    canvas.drawLine(
-      Offset(stemX, stemBaseY),
-      Offset(stemX, stemTop),
-      Paint()
-        ..color = AppPalette.pageInk
-        ..strokeWidth = 1.35,
-    );
+      if (!hit.piece.showStem) {
+        continue;
+      }
 
-    for (var flag = 0; flag < noteSpec.flagCount; flag++) {
-      _drawFlag(
-        canvas,
-        Offset(stemX, stemTop + flag * lineSpacing * 0.48),
-        lineSpacing,
-      );
-    }
+      final stemX = stemXForIndex(x, noteWidth, stemIndex, stemmedHits.length);
+      final stemTop = stemTopYForNote(y, lineSpacing);
+      stemTops.add(stemTop);
+      stemIndex += 1;
 
-    if (noteSpec.dotted) {
-      canvas.drawCircle(
-        Offset(x + noteWidth * 1.15, stemBaseY - lineSpacing * 0.12),
-        lineSpacing * 0.11,
-        Paint()..color = AppPalette.pageInk,
-      );
+      canvas.drawLine(Offset(stemX, y), Offset(stemX, stemTop), stemPaint);
+
+      for (var flag = 0; flag < noteSpec.flagCount; flag++) {
+        _drawFlag(
+          canvas,
+          Offset(stemX, stemTop + flag * lineSpacing * 0.48),
+          lineSpacing,
+        );
+      }
+
+      if (noteSpec.dotted) {
+        canvas.drawCircle(
+          Offset(x + noteWidth * 1.15, y - lineSpacing * 0.12),
+          lineSpacing * 0.11,
+          Paint()..color = AppPalette.pageInk,
+        );
+      }
     }
 
     if (slot.isAccent) {
@@ -308,16 +343,21 @@ class ScorePagePainter extends CustomPainter {
         ..color = AppPalette.pageInk
         ..strokeWidth = 1.2
         ..style = PaintingStyle.stroke;
-      final accentY = stemTop - lineSpacing * 0.46;
+      final accentY =
+          (stemTops.isEmpty ? staffTop : stemTops.reduce(math.min)) -
+          lineSpacing * 0.46;
       final accentWidth = lineSpacing * 0.75;
+      final accentStemX = stemTops.isEmpty
+          ? x + noteWidth * 0.62
+          : stemXForIndex(x, noteWidth, 0, math.max(stemmedHits.length, 1));
       canvas.drawLine(
-        Offset(stemX - accentWidth * 0.5, accentY),
-        Offset(stemX + accentWidth * 0.5, accentY - lineSpacing * 0.22),
+        Offset(accentStemX - accentWidth * 0.5, accentY),
+        Offset(accentStemX + accentWidth * 0.5, accentY - lineSpacing * 0.22),
         accentPaint,
       );
       canvas.drawLine(
-        Offset(stemX - accentWidth * 0.5, accentY + lineSpacing * 0.1),
-        Offset(stemX + accentWidth * 0.5, accentY - lineSpacing * 0.12),
+        Offset(accentStemX - accentWidth * 0.5, accentY + lineSpacing * 0.1),
+        Offset(accentStemX + accentWidth * 0.5, accentY - lineSpacing * 0.12),
         accentPaint,
       );
     }

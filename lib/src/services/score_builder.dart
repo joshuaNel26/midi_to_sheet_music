@@ -88,30 +88,32 @@ class ScoreBuilder {
       );
     });
 
-    const measuresPerSystem = 4;
-    const systemsPerPage = 6;
     final systems = <ScoreSystem>[];
 
-    for (var index = 0; index < measures.length; index += measuresPerSystem) {
+    for (
+      var index = 0;
+      index < measures.length;
+      index += scoreMeasuresPerSystem
+    ) {
       systems.add(
         ScoreSystem(
           index: systems.length,
           measures: measures.sublist(
             index,
-            math.min(index + measuresPerSystem, measures.length),
+            math.min(index + scoreMeasuresPerSystem, measures.length),
           ),
         ),
       );
     }
 
     final pages = <ScorePageData>[];
-    for (var index = 0; index < systems.length; index += systemsPerPage) {
+    for (var index = 0; index < systems.length; index += scoreSystemsPerPage) {
       pages.add(
         ScorePageData(
           index: pages.length,
           systems: systems.sublist(
             index,
-            math.min(index + systemsPerPage, systems.length),
+            math.min(index + scoreSystemsPerPage, systems.length),
           ),
         ),
       );
