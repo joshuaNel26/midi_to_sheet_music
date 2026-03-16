@@ -15,9 +15,10 @@ void main() {
     );
     final savedMapping = {36: 'kick', 38: 'snare', 42: 'closed_hihat'};
 
-    await store.save(savedMapping);
-    final loadedMapping = await store.load();
+    await store.save(mapping: savedMapping, startOffsetSlots: 6);
+    final loadedConfig = await store.load();
 
-    expect(loadedMapping, savedMapping);
+    expect(loadedConfig.noteMapping, savedMapping);
+    expect(loadedConfig.startOffsetSlots, 6);
   });
 }
