@@ -13,11 +13,9 @@ import 'services/mapping_config_store.dart';
 import 'services/mapping_file_parser.dart';
 import 'services/midi_parser.dart';
 import 'services/musicxml_export_service.dart';
-import 'services/pdf_export_service.dart';
 import 'services/score_builder.dart';
 import 'theme.dart';
 import 'widgets/drum_tab_preview.dart';
-import 'widgets/score_preview.dart';
 
 const _midiFileTypes = [
   XTypeGroup(label: 'MIDI Files', extensions: ['mid', 'midi']),
@@ -25,10 +23,6 @@ const _midiFileTypes = [
 
 const _tabFileTypes = [
   XTypeGroup(label: 'Text Documents', extensions: ['txt']),
-];
-
-const _pdfFileTypes = [
-  XTypeGroup(label: 'PDF Documents', extensions: ['pdf']),
 ];
 
 const _musicXmlFileTypes = [
@@ -42,8 +36,6 @@ const _programFileTypes = [
 const _mappingFileTypes = [
   XTypeGroup(label: 'Mapping Files', extensions: ['iom']),
 ];
-
-enum _PreviewMode { tab, sheet }
 
 class MidiToDrumApp extends StatelessWidget {
   const MidiToDrumApp({super.key});
@@ -95,7 +87,6 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   bool _isLoading = false;
   bool _isDetectingTools = false;
   bool _isExportingTab = false;
-  bool _isExportingPdf = false;
   bool _isExportingMusicXml = false;
   bool _isImportingMapping = false;
   bool _isEditingTab = false;
@@ -103,7 +94,6 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   bool _isLaunchingMuseScore = false;
   bool _isRenderingWithLilyPond = false;
   bool _isSavingConfig = false;
-  _PreviewMode _previewMode = _PreviewMode.tab;
 
   @override
   void initState() {
@@ -255,7 +245,6 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         _score = score;
         _tabDocument = tabDocument;
         _isEditingTab = false;
-        _previewMode = _PreviewMode.tab;
         _loadedFileName = selection.name;
         _loadedFilePath = selection.path;
         _statusMessage = parsedMidi.usedPercussionChannelOnly
@@ -334,59 +323,6 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
       if (mounted) {
         setState(() {
           _isExportingTab = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _exportSheetPdf() async {
-    final tabDocument = _tabDocument;
-    final score = _score;
-    if (tabDocument == null || score == null) {
-      return;
-    }
-
-    setState(() {
-      _isExportingPdf = true;
-      _errorMessage = null;
-    });
-
-    try {
-      final saveLocation = await getSaveLocation(
-        acceptedTypeGroups: _pdfFileTypes,
-        suggestedName: '${tabDocument.title.replaceAll(' ', '_')}.pdf',
-        confirmButtonText: 'Export PDF',
-      );
-
-      if (saveLocation == null) {
-        return;
-      }
-
-      final targetPath = saveLocation.path.toLowerCase().endsWith('.pdf')
-          ? saveLocation.path
-          : '${saveLocation.path}.pdf';
-      final pdfBytes = await PdfExportService.buildPdf(score);
-      await File(targetPath).writeAsBytes(pdfBytes, flush: true);
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _statusMessage = 'Sheet music PDF exported to $targetPath';
-      });
-      _showMessage('Sheet music PDF exported to $targetPath');
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _errorMessage = 'The PDF export failed. ${error.toString()}';
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isExportingPdf = false;
         });
       }
     }
@@ -1016,36 +952,12 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
       _generatedTabText.isNotEmpty &&
       _tabDocument!.toPlainText() != _generatedTabText;
 
-  void _togglePreviewMode() {
-    if (_score == null || _tabDocument == null) {
-      return;
-    }
-
-    setState(() {
-      _previewMode = _previewMode == _PreviewMode.tab
-          ? _PreviewMode.sheet
-          : _PreviewMode.tab;
-      _statusMessage = _previewMode == _PreviewMode.sheet
-          ? 'Sheet music preview is ready. Switch back to the tab anytime to keep editing.'
-          : (_isEditingTab
-                ? 'Returned to the editable tab grid.'
-                : 'Returned to the tab preview.');
-    });
-  }
-
   void _toggleTabEditing() {
     if (_tabDocument == null) {
       return;
     }
 
     setState(() {
-      if (_previewMode == _PreviewMode.sheet) {
-        _previewMode = _PreviewMode.tab;
-        _isEditingTab = true;
-        _statusMessage = 'Returned to the tab grid so you can keep editing.';
-        return;
-      }
-
       _isEditingTab = !_isEditingTab;
       _statusMessage = _isEditingTab
           ? 'Cell editing is enabled for the tab preview.'
@@ -1177,7 +1089,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Load a MIDI file, review the detected note map, edit the generated drum tab, preview the matching sheet music, and export either format.',
+                      'Load a MIDI file, review the detected note map, edit the generated drum tab, and export the tab or MusicXML.',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: AppPalette.textMuted,
                       ),
@@ -1438,7 +1350,6 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     final score = _score;
     final tabDocument = _tabDocument;
     final canExportTab = tabDocument != null && !_isExportingTab;
-    final canExportPdf = score != null && !_isExportingPdf;
     final canExportMusicXml = score != null && !_isExportingMusicXml;
 
     return Column(
@@ -1447,7 +1358,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         Text('Export', style: theme.textTheme.titleLarge),
         const SizedBox(height: 14),
         Text(
-          'The tab text, in-app sheet preview, PDF, and MusicXML all come from the same edited tab. MusicXML is the best handoff if you want polished engraving in MuseScore or another notation tool.',
+          'The tab text and MusicXML both come from the same edited tab. MusicXML is the best handoff if you want polished engraving in MuseScore, Crescendo, LilyPond, or another notation tool.',
           style: theme.textTheme.bodyMedium?.copyWith(
             color: AppPalette.textMuted,
           ),
@@ -1493,29 +1404,10 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
           ),
         ),
         const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: canExportPdf ? _exportSheetPdf : null,
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size.fromHeight(50),
-            foregroundColor: AppPalette.textPrimary,
-            side: const BorderSide(color: AppPalette.divider),
-          ),
-          icon: _isExportingPdf
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.picture_as_pdf_outlined),
-          label: Text(
-            _isExportingPdf ? 'Exporting PDF...' : 'Export Sheet Music as PDF',
-          ),
-        ),
-        const SizedBox(height: 12),
         Text(
           tabDocument == null
               ? 'Load a MIDI file first to enable export.'
-              : 'Current tab: ${score?.measures.length ?? 0} measures, ${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}, and ${score?.totalPages ?? 0} preview page${score?.totalPages == 1 ? '' : 's'}.',
+              : 'Current tab: ${score?.measures.length ?? 0} measures across ${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: AppPalette.textMuted,
           ),
@@ -1714,7 +1606,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         const SizedBox(height: 12),
         Text(
           scoreLoaded
-              ? 'These actions use the current edited tab state, the same way MusicXML and PDF export do.'
+              ? 'These actions use the current edited tab state, the same way MusicXML export does.'
               : 'Load a MIDI file first, then these hooks can use the current edited tab state.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: AppPalette.textMuted,
@@ -1775,17 +1667,11 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   Widget _buildPreviewPane(ThemeData theme) {
     final score = _score;
     final tabDocument = _tabDocument;
-    final isSheetPreview = _previewMode == _PreviewMode.sheet;
-    final previewTitle = isSheetPreview ? 'Sheet Music' : 'Drum Tab';
-    final previewDescription = isSheetPreview
-        ? 'This is the built-in sheet preview. For a polished engraved score, export MusicXML and open it in notation software.'
-        : 'This preview uses the same drum-tab layout that is written into the exported text file.';
-    final previewCountLabel = isSheetPreview
-        ? '${score?.totalPages ?? 0} page${score?.totalPages == 1 ? '' : 's'}'
-        : '${tabDocument?.blockCount ?? 0} block${tabDocument?.blockCount == 1 ? '' : 's'}';
-    final previewCountIcon = isSheetPreview
-        ? Icons.picture_as_pdf_outlined
-        : Icons.view_week_outlined;
+    const previewTitle = 'Drum Tab';
+    const previewDescription =
+        'This preview uses the same drum-tab layout that is written into the exported text file.';
+    final previewCountLabel =
+        '${tabDocument?.blockCount ?? 0} block${tabDocument?.blockCount == 1 ? '' : 's'}';
 
     return _PanelCard(
       padding: const EdgeInsets.all(20),
@@ -1828,22 +1714,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                         ),
                         _InfoChip(
                           label: previewCountLabel,
-                          icon: previewCountIcon,
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _togglePreviewMode,
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppPalette.textPrimary,
-                            side: const BorderSide(color: AppPalette.divider),
-                          ),
-                          icon: Icon(
-                            isSheetPreview
-                                ? Icons.table_rows_outlined
-                                : Icons.picture_as_pdf_outlined,
-                          ),
-                          label: Text(
-                            isSheetPreview ? 'Back to Tab' : 'View Sheet',
-                          ),
+                          icon: Icons.view_week_outlined,
                         ),
                         OutlinedButton.icon(
                           onPressed: _toggleTabEditing,
@@ -1852,18 +1723,12 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                             side: const BorderSide(color: AppPalette.divider),
                           ),
                           icon: Icon(
-                            isSheetPreview
-                                ? Icons.edit_note_outlined
-                                : (_isEditingTab
-                                      ? Icons.visibility_outlined
-                                      : Icons.grid_view_outlined),
+                            _isEditingTab
+                                ? Icons.visibility_outlined
+                                : Icons.grid_view_outlined,
                           ),
                           label: Text(
-                            isSheetPreview
-                                ? 'Edit Tab'
-                                : (_isEditingTab
-                                      ? 'Preview Tab'
-                                      : 'Edit Cells'),
+                            _isEditingTab ? 'Preview Tab' : 'Edit Cells',
                           ),
                         ),
                         OutlinedButton.icon(
@@ -1881,42 +1746,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                 ),
                 const SizedBox(height: 18),
                 Expanded(
-                  child: isSheetPreview
-                      ? Scrollbar(
-                          controller: _previewScrollController,
-                          thumbVisibility: true,
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final previewWidth = math.min(
-                                900.0,
-                                constraints.maxWidth - 20,
-                              );
-                              return SingleChildScrollView(
-                                controller: _previewScrollController,
-                                primary: false,
-                                padding: const EdgeInsets.only(right: 6),
-                                child: Center(
-                                  child: SizedBox(
-                                    width: previewWidth,
-                                    child: Column(
-                                      children: [
-                                        for (final page in score.pages) ...[
-                                          ScorePageWidget(
-                                            score: score,
-                                            page: page,
-                                          ),
-                                          if (page != score.pages.last)
-                                            const SizedBox(height: 24),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        )
-                      : _isEditingTab
+                  child: _isEditingTab
                       ? Scrollbar(
                           controller: _previewScrollController,
                           thumbVisibility: true,
@@ -2275,7 +2105,7 @@ class _PreviewPlaceholder extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                'Open a drum MIDI file to inspect the detected note numbers, adjust the General MIDI drum map, edit the generated tab, preview the matching sheet music, and export either version.',
+                'Open a drum MIDI file to inspect the detected note numbers, adjust the General MIDI drum map, edit the generated tab, and export the tab or MusicXML.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: AppPalette.textMuted,
                 ),

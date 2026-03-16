@@ -1,5 +1,5 @@
 name: midi_to_drum
-description: "Windows desktop app for converting MIDI drum parts into previewable drum sheet music and PDF exports."
+description: "Windows desktop app for converting MIDI drum parts into editable drum tab with MusicXML export and notation-tool hooks."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -35,7 +35,6 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   file_selector: ^1.1.0
-  pdf: ^3.11.3
   path_provider: ^2.1.5
 
 dev_dependencies:
