@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 enum DrumNoteheadStyle { regular, cross }
 
+const scoreMeasuresPerSystem = 4;
+const scoreSystemsPerPage = 6;
+
 class DrumPiece {
   const DrumPiece({
     required this.id,
@@ -35,7 +38,7 @@ class DrumLibrary {
     id: 'kick',
     label: 'Kick',
     shortLabel: 'Kick',
-    staffPosition: 10,
+    staffPosition: 7,
   );
 
   static const snare = DrumPiece(
@@ -90,7 +93,7 @@ class DrumLibrary {
     id: 'crash',
     label: 'Crash Cymbal',
     shortLabel: 'Cr',
-    staffPosition: -4,
+    staffPosition: -2,
     noteheadStyle: DrumNoteheadStyle.cross,
   );
 
@@ -98,7 +101,7 @@ class DrumLibrary {
     id: 'ride',
     label: 'Ride Cymbal',
     shortLabel: 'Rd',
-    staffPosition: -2,
+    staffPosition: -1,
     noteheadStyle: DrumNoteheadStyle.cross,
   );
 
@@ -106,14 +109,14 @@ class DrumLibrary {
     id: 'high_tom',
     label: 'High Tom',
     shortLabel: 'HT',
-    staffPosition: 1,
+    staffPosition: 0,
   );
 
   static const midTom = DrumPiece(
     id: 'mid_tom',
     label: 'Mid Tom',
     shortLabel: 'MT',
-    staffPosition: 3,
+    staffPosition: 2,
   );
 
   static const lowTom = DrumPiece(
