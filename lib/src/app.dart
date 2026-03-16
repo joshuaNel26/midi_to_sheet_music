@@ -6,12 +6,18 @@ import 'package:flutter/material.dart';
 
 import 'models/drum_models.dart';
 import 'services/drum_tab_builder.dart';
+import 'services/drum_tab_score_converter.dart';
+import 'services/external_tool_config_store.dart';
+import 'services/external_tool_service.dart';
 import 'services/mapping_config_store.dart';
 import 'services/mapping_file_parser.dart';
 import 'services/midi_parser.dart';
+import 'services/musicxml_export_service.dart';
+import 'services/pdf_export_service.dart';
 import 'services/score_builder.dart';
 import 'theme.dart';
 import 'widgets/drum_tab_preview.dart';
+import 'widgets/score_preview.dart';
 
 const _midiFileTypes = [
   XTypeGroup(label: 'MIDI Files', extensions: ['mid', 'midi']),
@@ -21,9 +27,23 @@ const _tabFileTypes = [
   XTypeGroup(label: 'Text Documents', extensions: ['txt']),
 ];
 
+const _pdfFileTypes = [
+  XTypeGroup(label: 'PDF Documents', extensions: ['pdf']),
+];
+
+const _musicXmlFileTypes = [
+  XTypeGroup(label: 'MusicXML Documents', extensions: ['musicxml', 'xml']),
+];
+
+const _programFileTypes = [
+  XTypeGroup(label: 'Programs', extensions: ['exe', 'bat', 'cmd', 'py']),
+];
+
 const _mappingFileTypes = [
   XTypeGroup(label: 'Mapping Files', extensions: ['iom']),
 ];
+
+enum _PreviewMode { tab, sheet }
 
 class MidiToDrumApp extends StatelessWidget {
   const MidiToDrumApp({super.key});
@@ -48,6 +68,10 @@ class MidiToDrumHomePage extends StatefulWidget {
 
 class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   final DrumTabBuilder _tabBuilder = DrumTabBuilder();
+  final DrumTabScoreConverter _tabScoreConverter = DrumTabScoreConverter();
+  final ExternalToolConfigStore _externalToolConfigStore =
+      ExternalToolConfigStore();
+  final ExternalToolService _externalToolService = ExternalToolService();
   final MappingConfigStore _mappingConfigStore = MappingConfigStore();
   final MidiFileParser _midiParser = MidiFileParser();
   final SamplerIoMapParser _ioMapParser = SamplerIoMapParser();
@@ -65,18 +89,27 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   String? _statusMessage;
   String? _errorMessage;
   Map<int, String> _savedMappingConfig = const {};
+  ExternalToolConfig _externalToolConfig = const ExternalToolConfig.empty();
   int _startOffsetSlots = 0;
   String _generatedTabText = '';
   bool _isLoading = false;
-  bool _isExporting = false;
+  bool _isDetectingTools = false;
+  bool _isExportingTab = false;
+  bool _isExportingPdf = false;
+  bool _isExportingMusicXml = false;
   bool _isImportingMapping = false;
   bool _isEditingTab = false;
+  bool _isLaunchingCrescendo = false;
+  bool _isLaunchingMuseScore = false;
+  bool _isRenderingWithLilyPond = false;
   bool _isSavingConfig = false;
+  _PreviewMode _previewMode = _PreviewMode.tab;
 
   @override
   void initState() {
     super.initState();
     _loadSavedMappingConfig();
+    _loadExternalToolConfig();
   }
 
   @override
@@ -145,6 +178,31 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     }
   }
 
+  Future<void> _loadExternalToolConfig() async {
+    try {
+      final savedConfig = await _externalToolConfigStore.load();
+      final detectedConfig = await _externalToolService.detectInstalledTools(
+        preferred: savedConfig,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _externalToolConfig = detectedConfig;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage =
+            'The external tool configuration could not be loaded. ${error.toString()}';
+      });
+    }
+  }
+
   Future<void> _selectMidiFile() async {
     final selection = await openFile(
       acceptedTypeGroups: _midiFileTypes,
@@ -197,6 +255,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         _score = score;
         _tabDocument = tabDocument;
         _isEditingTab = false;
+        _previewMode = _PreviewMode.tab;
         _loadedFileName = selection.name;
         _loadedFilePath = selection.path;
         _statusMessage = parsedMidi.usedPercussionChannelOnly
@@ -234,7 +293,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     }
 
     setState(() {
-      _isExporting = true;
+      _isExportingTab = true;
       _errorMessage = null;
     });
 
@@ -274,7 +333,415 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
     } finally {
       if (mounted) {
         setState(() {
-          _isExporting = false;
+          _isExportingTab = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _exportSheetPdf() async {
+    final tabDocument = _tabDocument;
+    final score = _score;
+    if (tabDocument == null || score == null) {
+      return;
+    }
+
+    setState(() {
+      _isExportingPdf = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final saveLocation = await getSaveLocation(
+        acceptedTypeGroups: _pdfFileTypes,
+        suggestedName: '${tabDocument.title.replaceAll(' ', '_')}.pdf',
+        confirmButtonText: 'Export PDF',
+      );
+
+      if (saveLocation == null) {
+        return;
+      }
+
+      final targetPath = saveLocation.path.toLowerCase().endsWith('.pdf')
+          ? saveLocation.path
+          : '${saveLocation.path}.pdf';
+      final pdfBytes = await PdfExportService.buildPdf(score);
+      await File(targetPath).writeAsBytes(pdfBytes, flush: true);
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage = 'Sheet music PDF exported to $targetPath';
+      });
+      _showMessage('Sheet music PDF exported to $targetPath');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = 'The PDF export failed. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExportingPdf = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _exportMusicXml() async {
+    final score = _score;
+    final tabDocument = _tabDocument;
+    if (score == null || tabDocument == null) {
+      return;
+    }
+
+    setState(() {
+      _isExportingMusicXml = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final saveLocation = await getSaveLocation(
+        acceptedTypeGroups: _musicXmlFileTypes,
+        suggestedName: '${tabDocument.title.replaceAll(' ', '_')}.musicxml',
+        confirmButtonText: 'Export MusicXML',
+      );
+
+      if (saveLocation == null) {
+        return;
+      }
+
+      final lowerPath = saveLocation.path.toLowerCase();
+      final targetPath =
+          lowerPath.endsWith('.musicxml') || lowerPath.endsWith('.xml')
+          ? saveLocation.path
+          : '${saveLocation.path}.musicxml';
+      final document = MusicXmlExportService.build(score);
+      await File(targetPath).writeAsString(document, flush: true);
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage = 'MusicXML exported to $targetPath';
+      });
+      _showMessage('MusicXML exported to $targetPath');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = 'The MusicXML export failed. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExportingMusicXml = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _detectExternalTools({bool announce = true}) async {
+    setState(() {
+      _isDetectingTools = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final detectedConfig = await _externalToolService.detectInstalledTools(
+        preferred: _externalToolConfig,
+      );
+      await _externalToolConfigStore.save(detectedConfig);
+      if (!mounted) {
+        return;
+      }
+
+      final connectedTools = <String>[
+        if (detectedConfig.hasMuseScore) 'MuseScore Studio',
+        if (detectedConfig.hasCrescendo) 'Crescendo',
+        if (detectedConfig.hasLilyPond) 'LilyPond',
+        if (detectedConfig.hasMusicXmlToLy) 'musicxml2ly',
+      ];
+      setState(() {
+        _externalToolConfig = detectedConfig;
+        if (announce) {
+          _statusMessage = connectedTools.isEmpty
+              ? 'No external tools were detected automatically. You can set the executable paths manually below.'
+              : 'Detected: ${connectedTools.join(', ')}.';
+        }
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = 'The external tool scan failed. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDetectingTools = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _pickMuseScorePath() async {
+    final selection = await openFile(
+      acceptedTypeGroups: _programFileTypes,
+      confirmButtonText: 'Select MuseScore',
+    );
+    if (selection == null) {
+      return;
+    }
+
+    final nextConfig = _externalToolConfig.copyWith(
+      museScorePath: selection.path,
+    );
+    await _externalToolConfigStore.save(nextConfig);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _externalToolConfig = nextConfig;
+      _statusMessage = 'MuseScore Studio path updated.';
+    });
+  }
+
+  Future<void> _pickCrescendoPath() async {
+    final selection = await openFile(
+      acceptedTypeGroups: _programFileTypes,
+      confirmButtonText: 'Select Crescendo',
+    );
+    if (selection == null) {
+      return;
+    }
+
+    final nextConfig = _externalToolConfig.copyWith(
+      crescendoPath: selection.path,
+    );
+    await _externalToolConfigStore.save(nextConfig);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _externalToolConfig = nextConfig;
+      _statusMessage = 'Crescendo path updated.';
+    });
+  }
+
+  Future<void> _pickLilyPondPath() async {
+    final selection = await openFile(
+      acceptedTypeGroups: _programFileTypes,
+      confirmButtonText: 'Select LilyPond',
+    );
+    if (selection == null) {
+      return;
+    }
+
+    final inferredMusicXmlToLyPath =
+        await ExternalToolService.inferMusicXmlToLyPath(selection.path);
+    final nextConfig = _externalToolConfig.copyWith(
+      lilyPondPath: selection.path,
+      musicXmlToLyPath:
+          _externalToolConfig.musicXmlToLyPath ?? inferredMusicXmlToLyPath,
+    );
+    await _externalToolConfigStore.save(nextConfig);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _externalToolConfig = nextConfig;
+      _statusMessage = inferredMusicXmlToLyPath == null
+          ? 'LilyPond path updated.'
+          : 'LilyPond path updated and musicxml2ly was inferred automatically.';
+    });
+  }
+
+  Future<void> _pickMusicXmlToLyPath() async {
+    final selection = await openFile(
+      acceptedTypeGroups: _programFileTypes,
+      confirmButtonText: 'Select musicxml2ly',
+    );
+    if (selection == null) {
+      return;
+    }
+
+    final nextConfig = _externalToolConfig.copyWith(
+      musicXmlToLyPath: selection.path,
+    );
+    await _externalToolConfigStore.save(nextConfig);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _externalToolConfig = nextConfig;
+      _statusMessage = 'musicxml2ly path updated.';
+    });
+  }
+
+  Future<void> _openInMuseScore() async {
+    final score = _score;
+    final museScorePath = _externalToolConfig.museScorePath;
+    if (score == null || museScorePath == null) {
+      return;
+    }
+
+    setState(() {
+      _isLaunchingMuseScore = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final musicXmlPath = await _externalToolService.launchMuseScore(
+        score: score,
+        museScorePath: museScorePath,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage =
+            'Opened the current score in MuseScore Studio via $musicXmlPath';
+      });
+      _showMessage('MuseScore Studio opened the current MusicXML file.');
+    } on ExternalToolException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = error.message;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage =
+            'MuseScore Studio could not be launched. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLaunchingMuseScore = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _openInCrescendo() async {
+    final score = _score;
+    final crescendoPath = _externalToolConfig.crescendoPath;
+    if (score == null || crescendoPath == null) {
+      return;
+    }
+
+    setState(() {
+      _isLaunchingCrescendo = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final musicXmlPath = await _externalToolService.launchCrescendo(
+        score: score,
+        crescendoPath: crescendoPath,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage =
+            'Opened the current score in Crescendo via $musicXmlPath';
+      });
+      _showMessage('Crescendo opened the current MusicXML file.');
+    } on ExternalToolException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = error.message;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = 'Crescendo could not be launched. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLaunchingCrescendo = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _renderWithLilyPond() async {
+    final score = _score;
+    final lilyPondPath = _externalToolConfig.lilyPondPath;
+    final musicXmlToLyPath = _externalToolConfig.musicXmlToLyPath;
+    if (score == null || lilyPondPath == null || musicXmlToLyPath == null) {
+      return;
+    }
+
+    setState(() {
+      _isRenderingWithLilyPond = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final pdfPath = await _externalToolService.renderWithLilyPond(
+        score: score,
+        lilyPondPath: lilyPondPath,
+        musicXmlToLyPath: musicXmlToLyPath,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage = 'LilyPond rendered a PDF to $pdfPath';
+      });
+      _showMessage('LilyPond rendered the current score.');
+    } on ExternalToolException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = error.message;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage =
+            'LilyPond could not render the score. ${error.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRenderingWithLilyPond = false;
         });
       }
     }
@@ -549,16 +1016,40 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
       _generatedTabText.isNotEmpty &&
       _tabDocument!.toPlainText() != _generatedTabText;
 
+  void _togglePreviewMode() {
+    if (_score == null || _tabDocument == null) {
+      return;
+    }
+
+    setState(() {
+      _previewMode = _previewMode == _PreviewMode.tab
+          ? _PreviewMode.sheet
+          : _PreviewMode.tab;
+      _statusMessage = _previewMode == _PreviewMode.sheet
+          ? 'Sheet music preview is ready. Switch back to the tab anytime to keep editing.'
+          : (_isEditingTab
+                ? 'Returned to the editable tab grid.'
+                : 'Returned to the tab preview.');
+    });
+  }
+
   void _toggleTabEditing() {
     if (_tabDocument == null) {
       return;
     }
 
     setState(() {
+      if (_previewMode == _PreviewMode.sheet) {
+        _previewMode = _PreviewMode.tab;
+        _isEditingTab = true;
+        _statusMessage = 'Returned to the tab grid so you can keep editing.';
+        return;
+      }
+
       _isEditingTab = !_isEditingTab;
       _statusMessage = _isEditingTab
-          ? 'Editing mode enabled for the generated tab text.'
-          : 'Returned to the generated tab preview.';
+          ? 'Cell editing is enabled for the tab preview.'
+          : 'Returned to the tab preview.';
     });
   }
 
@@ -603,6 +1094,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         measureOffset: measureOffset,
         slotIndex: slotIndex,
       );
+      _score = _tabScoreConverter.build(tabDocument);
     });
   }
 
@@ -685,7 +1177,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Load a MIDI file, review the detected note map, preview the drum tab, and export the finished tab as plain text.',
+                      'Load a MIDI file, review the detected note map, edit the generated drum tab, preview the matching sheet music, and export either format.',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: AppPalette.textMuted,
                       ),
@@ -715,7 +1207,7 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                                 )
                               : const Icon(Icons.library_music_outlined),
                           label: Text(
-                            _isLoading ? 'Loading…' : 'Open MIDI File',
+                            _isLoading ? 'Loading...' : 'Open MIDI File',
                           ),
                         ),
                         OutlinedButton.icon(
@@ -806,6 +1298,8 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
             _PanelCard(child: _buildTimingSection(theme)),
             const SizedBox(height: 18),
             _PanelCard(child: _buildExportSection(theme)),
+            const SizedBox(height: 18),
+            _PanelCard(child: _buildExternalToolsSection(theme)),
             const SizedBox(height: 18),
             _PanelCard(child: _buildMappingSection(theme)),
           ],
@@ -943,7 +1437,9 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   Widget _buildExportSection(ThemeData theme) {
     final score = _score;
     final tabDocument = _tabDocument;
-    final exportEnabled = tabDocument != null && !_isExporting;
+    final canExportTab = tabDocument != null && !_isExportingTab;
+    final canExportPdf = score != null && !_isExportingPdf;
+    final canExportMusicXml = score != null && !_isExportingMusicXml;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -951,20 +1447,20 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
         Text('Export', style: theme.textTheme.titleLarge),
         const SizedBox(height: 14),
         Text(
-          'The preview and exported text use the same drum-tab layout, and any manual edits made in edit mode are included in the saved file.',
+          'The tab text, in-app sheet preview, PDF, and MusicXML all come from the same edited tab. MusicXML is the best handoff if you want polished engraving in MuseScore or another notation tool.',
           style: theme.textTheme.bodyMedium?.copyWith(
             color: AppPalette.textMuted,
           ),
         ),
         const SizedBox(height: 18),
         FilledButton.icon(
-          onPressed: exportEnabled ? _exportTab : null,
+          onPressed: canExportTab ? _exportTab : null,
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(50),
             backgroundColor: AppPalette.accentSoft,
             foregroundColor: AppPalette.ink,
           ),
-          icon: _isExporting
+          icon: _isExportingTab
               ? const SizedBox(
                   width: 16,
                   height: 16,
@@ -972,14 +1468,254 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                 )
               : const Icon(Icons.text_snippet_outlined),
           label: Text(
-            _isExporting ? 'Exporting Tab...' : 'Export Drum Tab as TXT',
+            _isExportingTab ? 'Exporting Tab...' : 'Export Drum Tab as TXT',
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: canExportMusicXml ? _exportMusicXml : null,
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(50),
+            backgroundColor: AppPalette.accent,
+            foregroundColor: AppPalette.ink,
+          ),
+          icon: _isExportingMusicXml
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.library_books_outlined),
+          label: Text(
+            _isExportingMusicXml
+                ? 'Exporting MusicXML...'
+                : 'Export Sheet Music as MusicXML',
+          ),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: canExportPdf ? _exportSheetPdf : null,
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size.fromHeight(50),
+            foregroundColor: AppPalette.textPrimary,
+            side: const BorderSide(color: AppPalette.divider),
+          ),
+          icon: _isExportingPdf
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.picture_as_pdf_outlined),
+          label: Text(
+            _isExportingPdf ? 'Exporting PDF...' : 'Export Sheet Music as PDF',
           ),
         ),
         const SizedBox(height: 12),
         Text(
           tabDocument == null
               ? 'Load a MIDI file first to enable export.'
-              : 'Current tab: ${score?.measures.length ?? 0} measures across ${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}.',
+              : 'Current tab: ${score?.measures.length ?? 0} measures, ${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}, and ${score?.totalPages ?? 0} preview page${score?.totalPages == 1 ? '' : 's'}.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: AppPalette.textMuted,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _externalToolConfig.hasMuseScore || _externalToolConfig.hasCrescendo
+              ? 'A notation app is connected, so you can open the exported MusicXML directly from the External Tools section.'
+              : 'No notation app is connected yet, so MusicXML is exported as a file for now. You can set the executable path below when you are ready.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: AppPalette.textMuted,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExternalToolsSection(ThemeData theme) {
+    final scoreLoaded = _score != null;
+    final toolConfig = _externalToolConfig;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('External Tools', style: theme.textTheme.titleLarge),
+        const SizedBox(height: 14),
+        Text(
+          'Connect MuseScore Studio, Crescendo, or LilyPond if you want to hand off the edited tab to external engraving tools directly from the app.',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: AppPalette.textMuted,
+          ),
+        ),
+        const SizedBox(height: 16),
+        _ExternalToolRow(
+          label: 'MuseScore Studio',
+          path: toolConfig.museScorePath,
+          unavailableLabel: 'Not detected yet',
+        ),
+        const SizedBox(height: 10),
+        _ExternalToolRow(
+          label: 'Crescendo',
+          path: toolConfig.crescendoPath,
+          unavailableLabel: 'Not detected yet',
+        ),
+        const SizedBox(height: 10),
+        _ExternalToolRow(
+          label: 'LilyPond',
+          path: toolConfig.lilyPondPath,
+          unavailableLabel: 'Not detected yet',
+        ),
+        const SizedBox(height: 10),
+        _ExternalToolRow(
+          label: 'musicxml2ly',
+          path: toolConfig.musicXmlToLyPath,
+          unavailableLabel: 'Needed for LilyPond conversion',
+        ),
+        const SizedBox(height: 18),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _isDetectingTools
+                  ? null
+                  : () => _detectExternalTools(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppPalette.textPrimary,
+                side: const BorderSide(color: AppPalette.divider),
+              ),
+              icon: _isDetectingTools
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.search_outlined),
+              label: Text(_isDetectingTools ? 'Detecting...' : 'Auto-Detect'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _pickMuseScorePath,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppPalette.textPrimary,
+                side: const BorderSide(color: AppPalette.divider),
+              ),
+              icon: const Icon(Icons.piano_outlined),
+              label: const Text('Locate MuseScore'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _pickCrescendoPath,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppPalette.textPrimary,
+                side: const BorderSide(color: AppPalette.divider),
+              ),
+              icon: const Icon(Icons.queue_music_outlined),
+              label: const Text('Locate Crescendo'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _pickLilyPondPath,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppPalette.textPrimary,
+                side: const BorderSide(color: AppPalette.divider),
+              ),
+              icon: const Icon(Icons.music_note_outlined),
+              label: const Text('Locate LilyPond'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _pickMusicXmlToLyPath,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppPalette.textPrimary,
+                side: const BorderSide(color: AppPalette.divider),
+              ),
+              icon: const Icon(Icons.code_outlined),
+              label: const Text('Locate musicxml2ly'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            FilledButton.icon(
+              onPressed:
+                  scoreLoaded &&
+                      toolConfig.hasCrescendo &&
+                      !_isLaunchingCrescendo
+                  ? _openInCrescendo
+                  : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppPalette.accentSoft,
+                foregroundColor: AppPalette.ink,
+              ),
+              icon: _isLaunchingCrescendo
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.open_in_new_outlined),
+              label: Text(
+                _isLaunchingCrescendo
+                    ? 'Opening Crescendo...'
+                    : 'Open in Crescendo',
+              ),
+            ),
+            FilledButton.icon(
+              onPressed:
+                  scoreLoaded &&
+                      toolConfig.hasMuseScore &&
+                      !_isLaunchingMuseScore
+                  ? _openInMuseScore
+                  : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppPalette.accentSoft,
+                foregroundColor: AppPalette.ink,
+              ),
+              icon: _isLaunchingMuseScore
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.launch_outlined),
+              label: Text(
+                _isLaunchingMuseScore
+                    ? 'Opening MuseScore...'
+                    : 'Open in MuseScore',
+              ),
+            ),
+            FilledButton.icon(
+              onPressed:
+                  scoreLoaded &&
+                      toolConfig.hasLilyPondPipeline &&
+                      !_isRenderingWithLilyPond
+                  ? _renderWithLilyPond
+                  : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppPalette.accent,
+                foregroundColor: AppPalette.ink,
+              ),
+              icon: _isRenderingWithLilyPond
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.auto_awesome_motion_outlined),
+              label: Text(
+                _isRenderingWithLilyPond
+                    ? 'Rendering with LilyPond...'
+                    : 'Render with LilyPond',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          scoreLoaded
+              ? 'These actions use the current edited tab state, the same way MusicXML and PDF export do.'
+              : 'Load a MIDI file first, then these hooks can use the current edited tab state.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: AppPalette.textMuted,
           ),
@@ -1039,6 +1775,17 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
   Widget _buildPreviewPane(ThemeData theme) {
     final score = _score;
     final tabDocument = _tabDocument;
+    final isSheetPreview = _previewMode == _PreviewMode.sheet;
+    final previewTitle = isSheetPreview ? 'Sheet Music' : 'Drum Tab';
+    final previewDescription = isSheetPreview
+        ? 'This is the built-in sheet preview. For a polished engraved score, export MusicXML and open it in notation software.'
+        : 'This preview uses the same drum-tab layout that is written into the exported text file.';
+    final previewCountLabel = isSheetPreview
+        ? '${score?.totalPages ?? 0} page${score?.totalPages == 1 ? '' : 's'}'
+        : '${tabDocument?.blockCount ?? 0} block${tabDocument?.blockCount == 1 ? '' : 's'}';
+    final previewCountIcon = isSheetPreview
+        ? Icons.picture_as_pdf_outlined
+        : Icons.view_week_outlined;
 
     return _PanelCard(
       padding: const EdgeInsets.all(20),
@@ -1054,12 +1801,12 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Drum Tab',
+                            previewTitle,
                             style: theme.textTheme.headlineSmall,
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'This preview is the same tab layout used when you export the text file.',
+                            previewDescription,
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: AppPalette.textMuted,
                             ),
@@ -1080,9 +1827,23 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                           icon: Icons.speed_outlined,
                         ),
                         _InfoChip(
-                          label:
-                              '${tabDocument.blockCount} block${tabDocument.blockCount == 1 ? '' : 's'}',
-                          icon: Icons.view_week_outlined,
+                          label: previewCountLabel,
+                          icon: previewCountIcon,
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _togglePreviewMode,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppPalette.textPrimary,
+                            side: const BorderSide(color: AppPalette.divider),
+                          ),
+                          icon: Icon(
+                            isSheetPreview
+                                ? Icons.table_rows_outlined
+                                : Icons.picture_as_pdf_outlined,
+                          ),
+                          label: Text(
+                            isSheetPreview ? 'Back to Tab' : 'View Sheet',
+                          ),
                         ),
                         OutlinedButton.icon(
                           onPressed: _toggleTabEditing,
@@ -1091,12 +1852,18 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                             side: const BorderSide(color: AppPalette.divider),
                           ),
                           icon: Icon(
-                            _isEditingTab
-                                ? Icons.visibility_outlined
-                                : Icons.grid_view_outlined,
+                            isSheetPreview
+                                ? Icons.edit_note_outlined
+                                : (_isEditingTab
+                                      ? Icons.visibility_outlined
+                                      : Icons.grid_view_outlined),
                           ),
                           label: Text(
-                            _isEditingTab ? 'Preview Tab' : 'Edit Cells',
+                            isSheetPreview
+                                ? 'Edit Tab'
+                                : (_isEditingTab
+                                      ? 'Preview Tab'
+                                      : 'Edit Cells'),
                           ),
                         ),
                         OutlinedButton.icon(
@@ -1114,7 +1881,42 @@ class _MidiToDrumHomePageState extends State<MidiToDrumHomePage> {
                 ),
                 const SizedBox(height: 18),
                 Expanded(
-                  child: _isEditingTab
+                  child: isSheetPreview
+                      ? Scrollbar(
+                          controller: _previewScrollController,
+                          thumbVisibility: true,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final previewWidth = math.min(
+                                900.0,
+                                constraints.maxWidth - 20,
+                              );
+                              return SingleChildScrollView(
+                                controller: _previewScrollController,
+                                primary: false,
+                                padding: const EdgeInsets.only(right: 6),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: previewWidth,
+                                    child: Column(
+                                      children: [
+                                        for (final page in score.pages) ...[
+                                          ScorePageWidget(
+                                            score: score,
+                                            page: page,
+                                          ),
+                                          if (page != score.pages.last)
+                                            const SizedBox(height: 24),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        )
+                      : _isEditingTab
                       ? Scrollbar(
                           controller: _previewScrollController,
                           thumbVisibility: true,
@@ -1191,6 +1993,70 @@ class _PanelCard extends StatelessWidget {
         border: Border.all(color: AppPalette.divider.withValues(alpha: 0.8)),
       ),
       child: Padding(padding: padding, child: child),
+    );
+  }
+}
+
+class _ExternalToolRow extends StatelessWidget {
+  const _ExternalToolRow({
+    required this.label,
+    required this.path,
+    required this.unavailableLabel,
+  });
+
+  final String label;
+  final String? path;
+  final String unavailableLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isAvailable = path != null && path!.isNotEmpty;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppPalette.panelRaised,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppPalette.divider.withValues(alpha: 0.85)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              isAvailable
+                  ? Icons.check_circle_outline
+                  : Icons.radio_button_unchecked,
+              color: isAvailable ? AppPalette.success : AppPalette.textMuted,
+              size: 18,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    path ?? unavailableLabel,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: isAvailable
+                          ? AppPalette.textMuted
+                          : AppPalette.textMuted.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1294,7 +2160,7 @@ class _MappingRow extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    'MIDI ${sourceNote.midiNote} • ${midiNoteName(sourceNote.midiNote)}',
+                    'MIDI ${sourceNote.midiNote} - ${midiNoteName(sourceNote.midiNote)}',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -1409,7 +2275,7 @@ class _PreviewPlaceholder extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                'Open a drum MIDI file to inspect the detected note numbers, adjust the General MIDI drum map, preview a drum tab layout, and export that tab as plain text.',
+                'Open a drum MIDI file to inspect the detected note numbers, adjust the General MIDI drum map, edit the generated tab, preview the matching sheet music, and export either version.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: AppPalette.textMuted,
                 ),

@@ -57,6 +57,7 @@ void main() {
     final document = DrumTabBuilder().build(score);
 
     expect(document.blockCount, 1);
+    expect(document.metadataLine, '4/4 | 120 BPM | 4 hits | 3 mapped drums');
     expect(document.blocks.first.lines.first, contains('Count'));
     expect(document.blocks.first.lines.first, contains('1e+a2e+a3e+a4e+a'));
     expect(document.blocks.first.lines[1], contains('CH'));
@@ -93,6 +94,8 @@ void main() {
       measureOffset: 0,
       slotIndex: 0,
     );
+    expect(document.totalHits, 1);
+    expect(document.metadataLine, '4/4 | 120 BPM | 1 hits | 1 mapped drums');
     expect(document.blocks.first.lines[1], contains('o---------------'));
 
     document.blocks.first.toggleCell(
@@ -100,6 +103,8 @@ void main() {
       measureOffset: 0,
       slotIndex: 0,
     );
+    expect(document.totalHits, 0);
+    expect(document.metadataLine, '4/4 | 120 BPM | 0 hits | 0 mapped drums');
     expect(document.blocks.first.lines[1], contains('----------------'));
   });
 }
